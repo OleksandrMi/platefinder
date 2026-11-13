@@ -13,7 +13,7 @@
 <div id="summary">Выполняю…</div>
 <ol id="out"></ol>
 <script type="module">
-import { PlateText, Matcher, RED, GREEN, parsePlateLine, bestInLine } from './js/matcher.js';
+import { PlateText, Matcher, RED, GREEN, parsePlateLine, bestInLine, consensus } from './js/matcher.js';
 
 const powiats = new Map([
   ['DW', { code: 'DW', name: 'Wrocław (miasto)', service: false }],
@@ -72,6 +72,12 @@ const tests = {
     // без выбранных кодов: вариант с настоящим кодом повята выигрывает у мусорного
     const r = bestInLine([{ text: 'ADW1AB23', box: { x0: 0, y0: 0, x1: 1, y1: 1 } }], m([]));
     eq(r.hit.plate, 'DW1AB23');
+  },
+  consensusVoting() {
+    eq(consensus(['RPZE254', 'HPZB294', 'HPZB294', 'HPZ8294']), 'HPZB294');
+    eq(consensus(['HPZB294']), 'HPZB294');
+    eq(consensus(['ZB294', 'HPZB294', 'HPZB294']), 'HPZB294');
+    eq(consensus([]), '');
   },
   bestInLineSplitWords() {
     const parts = [

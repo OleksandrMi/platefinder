@@ -1,5 +1,5 @@
 // Офлайн-режим: приложение и модель распознавания кешируются после первого запуска.
-const VERSION = 'pf-web-1';
+const VERSION = 'pf-web-2';
 const SHELL = [
   './', 'index.html', 'js/app.js', 'js/matcher.js', 'js/powiats.js', 'js/detector.js', 'js/pipeline.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',

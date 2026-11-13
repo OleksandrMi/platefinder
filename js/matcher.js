@@ -144,6 +144,29 @@ export class Matcher {
 
 const SCORE = { list: 100, prefix: 50, plate: 30 };
 
+/**
+ * Голосование по нескольким прочтениям одной таблички:
+ * берём самую частую длину и по каждой позиции — самый частый символ.
+ * ['RPZE254','HPZB294','HPZB294','HPZ8294'] -> 'HPZB294'
+ */
+export function consensus(reads) {
+  if (!reads.length) return '';
+  const byLen = new Map();
+  for (const r of reads) byLen.set(r.length, (byLen.get(r.length) || 0) + 1);
+  const L = [...byLen].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+  const same = reads.filter((r) => r.length === L);
+  let out = '';
+  for (let i = 0; i < L; i++) {
+    const cnt = new Map();
+    for (const r of same) cnt.set(r[i], (cnt.get(r[i]) || 0) + 1);
+    let best = '', n = 0;
+    // при равенстве — символ из последнего прочтения (самого свежего)
+    for (const r of [...same].reverse()) if (cnt.get(r[i]) > n) { n = cnt.get(r[i]); best = r[i]; }
+    out += best;
+  }
+  return out;
+}
+
 /** Парсинг строки файла plates.txt: "WA 12345 green | заметка" */
 export function parsePlateLine(line) {
   const t = line.trim();

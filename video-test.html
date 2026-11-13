@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>PlateFinder — тест на кадрах с iPhone</title>
+<style>
+  body { font: 14px system-ui, sans-serif; background: #0a0d12; color: #e8edf5; padding: 16px; }
+  .ok { color: #30d158; } .fail { color: #ff3b30; }
+  .f { display: flex; gap: 12px; align-items: flex-start; margin: 8px 0; flex-wrap: wrap; }
+  .f img.crop { background: #fff; height: 40px; border: 1px solid #444; }
+  canvas { width: 160px; border: 1px solid #2a3342; }
+</style>
+</head>
+<body>
+<div id="summary">…</div>
+<div id="out"></div>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script type="module">
+import { Matcher } from './js/matcher.js';
+import { POWIATS } from './js/powiats.js';
+import { scanFrame, OCR_PARAMS, OCR_INIT, debug } from './js/pipeline.js';
+
+debug.enabled = true;
+const powiats = new Map(POWIATS.map(([code, name, region, s]) => [code, { code, name, region, service: !!s }]));
+const TRUTH = 'HPZB294';
+const files = ['vid_05', 'vid_25', 'vid_45', 'vid_65', 'vid_85', 'vid_105', 'vid_125', 'vid_145'];
+const workers = [];
+for (let i = 0; i < 2; i++) { const w = await Tesseract.createWorker('eng', 1, {}, OCR_INIT); await w.setParameters(OCR_PARAMS); workers.push(w); }
+const strict = new Matcher([{ plate: TRUTH, color: 'red', note: '' }], {}, powiats, false);
+
+let exact = 0, near = 0, total = 0;
+const results = [];
+for (const f of files) {
+  const img = new Image(); img.src = `test-assets/${f}.jpg`;
+  if (!(await img.decode().then(() => true, () => false))) continue;
+  // в настоящем видео с камеры нет панелей интерфейса — отрезаем их (верх ~9%, низ ~22% записи экрана)
+  const top = Math.round(img.height * 0.09), bottom = Math.round(img.height * 0.78);
+  const c = document.createElement('canvas'); c.width = img.width; c.height = bottom - top;
+  c.getContext('2d').drawImage(img, 0, top, img.width, c.height, 0, 0, img.width, c.height);
+  const t = performance.now();
+  const r = await scanFrame(c, workers, strict, 8);
+  const ms = performance.now() - t;
+  const reads = debug.crops.map((x) => x.text.replace(/\s+/g, ''));
+  const hit = r.detections.find((d) => d.hit.kind === 'list');
+  total++;
+  if (hit) exact++;
+  const row = document.createElement('div'); row.className = 'f';
+  row.innerHTML = `<div style="width:220px"><b class="${hit ? 'ok' : 'fail'}">${f}: ${hit ? 'НАЙДЕН' : 'нет'}</b><br>${(ms / 1000).toFixed(2)} с<br>${reads.join(' | ') || '—'}</div>` +
+    debug.crops.map((x) => `<img class="crop" src="${x.url}" title="${x.text}">`).join('');
+  document.getElementById('out').appendChild(row);
+  results.push({ f, hit: !!hit, reads });
+}
+const s = document.getElementById('summary');
+s.textContent = `номер ${TRUTH} прочитан точно на ${exact} из ${total} кадров`;
+s.className = exact >= total * 0.6 ? 'ok' : 'fail';
+window.VID_RESULT = { exact, total, results };
+</script>
+</body>
+</html>

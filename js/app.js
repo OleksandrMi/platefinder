@@ -1,9 +1,9 @@
 // Поиск номеров — веб-версия (iPhone / Android / ПК). Порт Android-приложения PlateFinder.
-import { PlateText, Matcher, RED, GREEN, parsePlateLine } from './matcher.js';
+import { PlateText, Matcher, RED, GREEN, parsePlateLine, consensus } from './matcher.js';
 import { POWIATS } from './powiats.js';
-import { scanFrame, OCR_PARAMS } from './pipeline.js';
+import { scanFrame, OCR_PARAMS, OCR_INIT } from './pipeline.js';
 
-const VERSION = '1.0-web';
+const VERSION = '1.1-web';
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -227,6 +227,8 @@ let tracks = [];            // [{box:{x0,y0,x1,y1} в пикселях экра�
 let cycleMs = 800;
 const lastSeen = new Map(); // plate -> ms
 const SIGHTING_GAP = 15000;
+let memory = [];            // [{box, reads[], seen}] — прочтения табличек для голосования
+const MEMORY_TTL = 2500;
 
 async function initOCR(onProgress) {
   const n = (navigator.hardwareConcurrency || 2) >= 4 ? 2 : 1;
@@ -237,7 +239,7 @@ async function initOCR(onProgress) {
         if (running || typeof m.progress !== 'number') return; // после запуска прогресс не нужен
         prog[i] = m.progress; onProgress(prog.reduce((a, b) => a + b, 0) / n);
       },
-    });
+    }, OCR_INIT);
     await w.setParameters(OCR_PARAMS);
     workers.push(w);
   }
@@ -278,15 +280,38 @@ function handleFrame(found, k) {
     const key = f.hit.watch?.plate || f.hit.plate;
     if (!byKey.has(key) || byKey.get(key).hit.score < f.hit.score) byKey.set(key, f);
   }
-  const fresh = [...byKey.values()].map((f) => ({ box: toBox(f.box), hit: f.hit, seen: now }));
-  const ttl = Math.max(900, cycleMs * 1.8);
   const overlaps = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+
+  // Голосование: прочтения одной и той же таблички за последние секунды (по месту в кадре)
+  memory = memory.filter((m) => now - m.seen < MEMORY_TTL);
+  const fresh = [...byKey.values()].map((f) => {
+    const box = toBox(f.box);
+    let mem = memory.find((m) => overlaps(m.box, box));
+    if (!mem) { mem = { box, reads: [], seen: now }; memory.push(mem); }
+    const read = f.hit.kind === 'list' && !f.hit.fuzzy ? f.hit.watch.plate : f.hit.plate;
+    mem.reads = mem.reads.concat(read).slice(-8);
+    mem.box = box; mem.seen = now;
+    let hit = f.hit;
+    const voted = consensus(mem.reads);
+    if (voted && voted !== hit.plate) {
+      const h2 = matcher.classify(voted);
+      if (h2 && h2.score >= hit.score) hit = h2;
+    }
+    // подтверждения номера из списка: сколько прочтений совпали с ним
+    const listVotes = hit.kind === 'list'
+      ? mem.reads.filter((r) => { const h = matcher.classify(r); return h?.kind === 'list' && h.watch.plate === hit.watch.plate; }).length
+      : 0;
+    return { box, hit, seen: now, listVotes };
+  });
+  const ttl = Math.max(900, cycleMs * 1.8);
   tracks = tracks.filter((o) => now - o.seen < ttl && !fresh.some((f) => overlaps(f.box, o.box))).concat(fresh);
   drawOverlay();
   updateStatus();
 
   for (const t of fresh) {
     if (t.hit.kind !== 'list') continue;
+    // точное совпадение — сразу; «примерное» (≈) — только после двух подтверждений
+    if (t.hit.fuzzy && t.listVotes < 2) continue;
     const w = t.hit.watch;
     const prev = lastSeen.get(w.plate);
     lastSeen.set(w.plate, now);
@@ -867,3 +892,12 @@ $('#btnStart').addEventListener('click', async () => {
 
 rebuildMatcher();
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+
+// отладка на компьютере разработчика (на сайте не включается)
+if (location.hostname === 'localhost') {
+  window.__pf = {
+    handleFrame: (found) => { running = true; handleFrame(found, 1); },
+    get tracks() { return tracks; },
+    get matcher() { return matcher; },
+  };
+}

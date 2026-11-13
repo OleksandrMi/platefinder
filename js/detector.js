@@ -130,7 +130,94 @@ export function findWhitePlates(gray, w, h, maxCount = 6) {
   return out.slice(0, maxCount);
 }
 
-/** Объединяет кандидатов двух детекторов без дублей. */
+/**
+ * Третий признак (самый надёжный): строка символов — 4+ тёмных пятна одинаковой высоты,
+ * стоящих в ряд. Не зависит от цвета машины и фона.
+ */
+export function findCharLines(gray, w, h, maxCount = 6) {
+  // адаптивный порог: темнее среднего по окрестности (интегральное изображение)
+  const R = Math.max(6, Math.round(w / 60));
+  const ii = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let row = 0;
+    for (let x = 0; x < w; x++) {
+      row += gray[y * w + x];
+      ii[(y + 1) * (w + 1) + x + 1] = ii[y * (w + 1) + x + 1] + row;
+    }
+  }
+  const dark = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - R), y1 = Math.min(h, y + R + 1);
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - R), x1 = Math.min(w, x + R + 1);
+      const s = ii[y1 * (w + 1) + x1] - ii[y0 * (w + 1) + x1] - ii[y1 * (w + 1) + x0] + ii[y0 * (w + 1) + x0];
+      const mean = s / ((x1 - x0) * (y1 - y0));
+      dark[y * w + x] = gray[y * w + x] < mean - 12 ? 1 : 0;
+    }
+  }
+
+  // связные тёмные пятна размером с символ
+  const lab = new Int32Array(w * h);
+  const stack = [];
+  const chars = [];
+  let id = 0;
+  for (let i = 0; i < dark.length; i++) {
+    if (!dark[i] || lab[i]) continue;
+    id++;
+    let x0 = w, y0 = h, x1 = 0, y1 = 0, area = 0;
+    stack.push(i); lab[i] = id;
+    while (stack.length) {
+      const p = stack.pop();
+      const x = p % w, y = (p - x) / w;
+      area++;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      if (x > 0 && dark[p - 1] && !lab[p - 1]) { lab[p - 1] = id; stack.push(p - 1); }
+      if (x < w - 1 && dark[p + 1] && !lab[p + 1]) { lab[p + 1] = id; stack.push(p + 1); }
+      if (y > 0 && dark[p - w] && !lab[p - w]) { lab[p - w] = id; stack.push(p - w); }
+      if (y < h - 1 && dark[p + w] && !lab[p + w]) { lab[p + w] = id; stack.push(p + w); }
+    }
+    const cw = x1 - x0 + 1, ch = y1 - y0 + 1;
+    if (ch < 7 || ch > h * 0.15 || cw < 1 || cw > ch * 1.1) continue;
+    const fill = area / (cw * ch);
+    if (fill < 0.12 || fill > 0.9) continue;
+    chars.push({ x0, y0, x1, y1, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, h: ch });
+  }
+  chars.sort((a, b) => a.x0 - b.x0);
+
+  // цепочки: похожая высота, на одной линии, небольшие промежутки
+  const used = new Uint8Array(chars.length);
+  const lines = [];
+  for (let i = 0; i < chars.length; i++) {
+    if (used[i]) continue;
+    const chain = [chars[i]];
+    used[i] = 1;
+    let last = chars[i];
+    for (let j = i + 1; j < chars.length; j++) {
+      if (used[j]) continue;
+      const c = chars[j];
+      if (c.x0 - last.x1 > last.h * 1.6) {
+        if (c.x0 - last.x1 > last.h * 4) break;
+        continue;
+      }
+      const hr = c.h / last.h;
+      if (hr < 0.75 || hr > 1.33) continue;
+      if (Math.abs(c.cy - last.cy) > last.h * 0.35) continue;
+      chain.push(c); used[j] = 1; last = c;
+    }
+    if (chain.length < 4 || chain.length > 12) continue;
+    const x0 = Math.min(...chain.map((c) => c.x0)), x1 = Math.max(...chain.map((c) => c.x1));
+    const y0 = Math.min(...chain.map((c) => c.y0)), y1 = Math.max(...chain.map((c) => c.y1));
+    const lw = x1 - x0 + 1, lh = y1 - y0 + 1;
+    if (lw / lh < 2 || lw / lh > 12) continue;
+    // ближе к 7 символам номера — выше рейтинг
+    const score = 3 + Math.sqrt(lw * lh) * (1 - Math.abs(chain.length - 7) / 10);
+    lines.push({ x: x0, y: y0, w: lw, h: lh, score });
+  }
+  lines.sort((a, b) => b.score - a.score);
+  return lines.slice(0, maxCount);
+}
+
+/** Объединяет кандидатов нескольких детекторов без дублей. */
 export function mergeRegions(lists, maxCount) {
   const all = lists.flat().sort((a, b) => b.score - a.score);
   const out = [];
