@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>PlateFinder — тесты логики</title>
+<style>
+  body { font: 14px system-ui, sans-serif; background: #0a0d12; color: #e8edf5; padding: 16px; }
+  .ok { color: #30d158; } .fail { color: #ff3b30; }
+  #summary { font-size: 18px; font-weight: 600; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<div id="summary">Выполняю…</div>
+<ol id="out"></ol>
+<script type="module">
+import { PlateText, Matcher, RED, GREEN, parsePlateLine, bestInLine } from './js/matcher.js';
+
+const powiats = new Map([
+  ['DW', { code: 'DW', name: 'Wrocław (miasto)', service: false }],
+  ['DWR', { code: 'DWR', name: 'Wrocław (powiat)', service: false }],
+  ['WA', { code: 'WA', name: 'Warszawa', service: false }],
+  ['WPI', { code: 'WPI', name: 'Piaseczno', service: false }],
+  ['HB', { code: 'HB', name: 'SOP/BOR', service: true }],
+]);
+const wp = (plate, color = 'red') => ({ plate, color, note: '' });
+const m = (plates, prefixes = {}, fuzzy = true) => new Matcher(plates, prefixes, powiats, fuzzy);
+
+const tests = {
+  codeOf() {
+    eq(PlateText.codeOf('WA12345'), 'WA'); eq(PlateText.codeOf('DWR7545G'), 'DWR');
+    eq(PlateText.codeOf('DW1AB23'), 'DW'); eq(PlateText.codeOf('1234567'), null);
+  },
+  polishFormat() {
+    for (const s of ['WA12345', 'DW1AB23', 'KR123AB', 'WPI1234A', 'DWR7545G', 'WPI12AB']) ok(PlateText.isPolishFormat(s), s);
+    for (const s of ['STOP', 'WARSZAWA', '1234567', 'AB', 'ABCDEFG']) ok(!PlateText.isPolishFormat(s), s);
+  },
+  pretty() { eq(PlateText.pretty('WA12345'), 'WA 12345'); eq(PlateText.pretty('WPI1234A'), 'WPI 1234A'); },
+  exactListMatch() { const h = m([wp('WA12345')]).classify('WA12345'); eq(h.kind, 'list'); ok(!h.fuzzy); },
+  ocrConfusion() { const h = m([wp('WA10380')]).classify('WAI03BO'); eq(h.kind, 'list'); ok(!h.fuzzy); },
+  euBand() { const h = m([wp('WA12345')]).classify('PLWA12345'); eq(h.kind, 'list'); eq(h.watch.plate, 'WA12345'); },
+  missingChar() { const h = m([wp('WA12345')]).classify('WA1245'); eq(h.kind, 'list'); ok(h.fuzzy); },
+  extraChar() { const h = m([wp('WA12345')]).classify('WA123145'); eq(h.kind, 'list'); ok(h.fuzzy); },
+  confusable() { const h = m([wp('KR1HX45')]).classify('KR1NX45'); eq(h.kind, 'list'); ok(h.fuzzy); },
+  differentDigitNoAlarm() { const h = m([wp('WA12345')]).classify('WA12346'); ok(h.kind !== 'list'); },
+  twoErrors() { const h = m([wp('KR1HX45')]).classify('KR1NK45'); ok(!h || h.kind !== 'list'); },
+  fuzzyOff() { const h = m([wp('WA12345')], {}, false).classify('WA1245'); ok(!h || h.kind !== 'list'); },
+  green() { eq(m([wp('DW1AB23', 'green')]).classify('DW1AB23').color, GREEN); },
+  twoLetterPrefix() {
+    const mm = m([], { DW: '#f00' });
+    eq(mm.classify('DW12345').kind, 'prefix'); eq(mm.classify('DWR7545G').kind, 'plate');
+  },
+  threeLetterPrefix() { const mm = m([], { DWR: '#0f0' }); eq(mm.classify('DWR7545G').kind, 'prefix'); },
+  servicePrefix() { eq(m([], { HB: '#00f' }).classify('HBP1234').kind, 'prefix'); },
+  listBeatsPrefix() { eq(m([wp('DW12345')], { DW: '#f00' }).classify('DW12345').kind, 'list'); },
+  randomText() { const mm = m([wp('WA12345')], { DW: '#f00' }); eq(mm.classify('PIZZA'), null); eq(mm.classify('OTWARTE'), null); },
+  shortFragment() { const h = m([wp('WA12345')]).classify('A1234'); ok(!h || h.kind !== 'list'); },
+  parseLine() {
+    eq(JSON.stringify(parsePlateLine('KR 5XY90 green | серый Passat')), JSON.stringify({ plate: 'KR5XY90', color: 'green', note: 'серый Passat' }));
+    eq(parsePlateLine('# comment'), null); eq(parsePlateLine('WA 12345').color, 'red');
+  },
+  euBandJunkChar() {
+    // «PL» прочитано как лишний символ перед номером
+    const one = (t) => [{ text: t, box: { x0: 0, y0: 0, x1: 100, y1: 20 } }];
+    const r1 = bestInLine(one('ADW1AB23'), m([], { DW: '#f00' }));
+    eq(r1.hit.kind, 'prefix'); eq(r1.hit.plate, 'DW1AB23');
+    const r2 = bestInLine(one('8WPI1234A'), m([]));
+    eq(r2.hit.plate, 'WPI1234A');
+    const r3 = bestInLine(one('AWA12345'), m([wp('WA12345')]));
+    eq(r3.hit.kind, 'list');
+  },
+  knownCodePreferred() {
+    // без выбранных кодов: вариант с настоящим кодом повята выигрывает у мусорного
+    const r = bestInLine([{ text: 'ADW1AB23', box: { x0: 0, y0: 0, x1: 1, y1: 1 } }], m([]));
+    eq(r.hit.plate, 'DW1AB23');
+  },
+  bestInLineSplitWords() {
+    const parts = [
+      { text: 'PL', box: { x0: 0, y0: 0, x1: 10, y1: 20 } },
+      { text: 'WA', box: { x0: 15, y0: 0, x1: 40, y1: 20 } },
+      { text: '12345', box: { x0: 45, y0: 0, x1: 100, y1: 20 } },
+    ];
+    const r = bestInLine(parts, m([wp('WA12345')]));
+    eq(r.hit.kind, 'list'); ok(r.box.x1 === 100);
+  },
+};
+
+function eq(a, b) { if (a !== b) throw new Error(`ожидалось ${JSON.stringify(b)}, получено ${JSON.stringify(a)}`); }
+function ok(c, msg = '') { if (!c) throw new Error('условие не выполнено ' + msg); }
+
+let fails = 0;
+const out = document.getElementById('out');
+for (const [name, fn] of Object.entries(tests)) {
+  const li = document.createElement('li');
+  try { fn(); li.className = 'ok'; li.textContent = name + ' ✓'; }
+  catch (e) { fails++; li.className = 'fail'; li.textContent = name + ' ✗ ' + e.message; }
+  out.appendChild(li);
+}
+const total = Object.keys(tests).length;
+const s = document.getElementById('summary');
+s.textContent = `tests=${total} failures=${fails}`;
+s.className = fails ? 'fail' : 'ok';
+window.TEST_RESULT = { total, fails };
+</script>
+</body>
+</html>

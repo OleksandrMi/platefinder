@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>PlateFinder — тест распознавания</title>
+<style>
+  body { font: 14px system-ui, sans-serif; background: #0a0d12; color: #e8edf5; padding: 16px; }
+  canvas { max-width: 100%; border: 1px solid #2a3342; display: block; margin: 8px 0 16px; }
+  .ok { color: #30d158; } .fail { color: #ff3b30; }
+</style>
+</head>
+<body>
+<h3>Сцена 1 — нарисованные номера</h3><div id="s1">…</div><canvas id="c1" width="1100" height="620"></canvas>
+<h3>Сцена 2 — скриншот с телефона (реальные фото номеров)</h3><div id="s2">…</div><canvas id="c2"></canvas>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script type="module">
+import { Matcher } from './js/matcher.js';
+import { POWIATS } from './js/powiats.js';
+import { scanFrame, OCR_PARAMS } from './js/pipeline.js';
+
+const powiats = new Map(POWIATS.map(([code, name, region, s]) => [code, { code, name, region, service: !!s }]));
+
+// ---- сцена 1
+const c1 = document.getElementById('c1'), g = c1.getContext('2d');
+g.fillStyle = '#5b6168'; g.fillRect(0, 0, c1.width, c1.height);
+for (let i = 0; i < 4000; i++) { g.fillStyle = `rgba(${Math.random() * 255 | 0},${Math.random() * 255 | 0},${Math.random() * 255 | 0},.15)`; g.fillRect(Math.random() * c1.width, Math.random() * c1.height, 3, 3); }
+function plate(x, y, h, text) {
+  g.font = `bold ${h * 0.78}px Arial`; const w = g.measureText(text).width + h * 0.9;
+  g.fillStyle = '#fff'; g.fillRect(x, y, w, h); g.strokeStyle = '#111'; g.lineWidth = 3; g.strokeRect(x, y, w, h);
+  g.fillStyle = '#039'; g.fillRect(x, y, h * 0.35, h);
+  g.fillStyle = '#fff'; g.font = `bold ${h * 0.22}px Arial`; g.fillText('PL', x + h * 0.03, y + h * 0.9);
+  g.fillStyle = '#111'; g.font = `bold ${h * 0.78}px Arial`; g.fillText(text, x + h * 0.5, y + h * 0.82);
+}
+plate(60, 80, 70, 'WA 12345'); plate(560, 260, 48, 'DW 1AB23'); plate(120, 430, 36, 'HPP M044'); plate(700, 480, 30, 'KR 5XY90');
+g.fillStyle = '#ffd60a'; g.font = 'bold 40px Arial'; g.fillText('PIZZA OTWARTE', 600, 90);
+
+// ---- сцена 2
+const img = new Image(); img.src = 'test-assets/screen1.jpg';
+const hasImg = await new Promise((r) => { img.onload = () => r(true); img.onerror = () => r(false); });
+const c2 = document.getElementById('c2');
+if (hasImg) { c2.width = img.width; c2.height = img.height; c2.getContext('2d').drawImage(img, 0, 0); }
+
+const t0 = performance.now();
+const workers = [];
+for (let i = 0; i < 2; i++) { const w = await Tesseract.createWorker('eng', 1); await w.setParameters(OCR_PARAMS); workers.push(w); }
+const tInit = performance.now() - t0;
+
+async function run(canvas, matcher, expect, el) {
+  const t = performance.now();
+  const { detections, regions } = await scanFrame(canvas, workers, matcher, 8);
+  const ms = performance.now() - t;
+  const ctx = canvas.getContext('2d');
+  ctx.lineWidth = 2; ctx.strokeStyle = '#ffd60a';
+  for (const r of regions) ctx.strokeRect(r.x, r.y, r.w, r.h);
+  ctx.lineWidth = 4;
+  for (const d of detections) { ctx.strokeStyle = d.hit.color; ctx.strokeRect(d.box.x0, d.box.y0, d.box.x1 - d.box.x0, d.box.y1 - d.box.y0); }
+  const got = detections.map((d) => `${d.hit.kind}:${d.hit.watch?.plate || d.hit.plate}`);
+  const missing = expect.filter((e) => !got.includes(e));
+  el.textContent = `найдено: ${got.join(', ') || '—'} | пропущено: ${missing.join(', ') || 'нет'} | областей: ${regions.length} | кадр ${(ms / 1000).toFixed(2)} с`;
+  el.className = missing.length ? 'fail' : 'ok';
+  return { got, missing, ms, regions: regions.length };
+}
+
+const m1 = new Matcher([{ plate: 'WA12345', color: 'red', note: '' }], { DW: '#64D2FF', HP: '#FF9F0A' }, powiats, true);
+const r1 = await run(c1, m1, ['list:WA12345', 'prefix:DW1AB23', 'prefix:HPPM044', 'plate:KR5XY90'], document.getElementById('s1'));
+let r2 = null;
+if (hasImg) {
+  const m2 = new Matcher([{ plate: 'HPPM044', color: 'red', note: '' }], {}, powiats, true);
+  r2 = await run(c2, m2, ['list:HPPM044', 'plate:RP23547'], document.getElementById('s2'));
+} else document.getElementById('s2').textContent = 'нет файла test-assets/screen1.jpg';
+window.OCR_RESULT = { tInit, r1, r2 };
+</script>
+</body>
+</html>
