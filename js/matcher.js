@@ -215,6 +215,16 @@ export function bestInLine(parts, matcher) {
         const hit = matcher.classify(v);
         if (hit && (!best || hit.score > best.hit.score)) best = { hit, box: { ...box } };
       }
+      // Круглая наклейка между кодом повята и номером (HPZ ● B294) часто читается как лишний символ.
+      // Пробуем убрать один символ на её месте — засчитываем только точное совпадение со списком.
+      if (n.length >= 7 && n.length <= 9) {
+        for (let k = 2; k <= 4; k++) {
+          const hit = matcher.classify(n.slice(0, k) + n.slice(k + 1));
+          if (hit && hit.kind === 'list' && !hit.fuzzy && (!best || hit.score - 1 > best.hit.score)) {
+            best = { hit: { ...hit, score: hit.score - 1 }, box: { ...box } };
+          }
+        }
+      }
     }
   }
   return best;

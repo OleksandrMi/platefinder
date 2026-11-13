@@ -73,6 +73,17 @@ const tests = {
     const r = bestInLine([{ text: 'ADW1AB23', box: { x0: 0, y0: 0, x1: 1, y1: 1 } }], m([]));
     eq(r.hit.plate, 'DW1AB23');
   },
+  stickerExtraChar() {
+    // наклейка между кодом и номером прочитана как лишний символ
+    const one = (t) => [{ text: t, box: { x0: 0, y0: 0, x1: 1, y1: 1 } }];
+    const r = bestInLine(one('HPZB8294'), m([wp('HPZB294')], {}, false));
+    eq(r.hit.kind, 'list'); ok(!r.hit.fuzzy); eq(r.hit.watch.plate, 'HPZB294');
+    const r2 = bestInLine(one('WA012345'), m([wp('WA12345')], {}, false));
+    eq(r2.hit.kind, 'list');
+    // без номера в списке лишний символ не «исправляется»
+    const r3 = bestInLine(one('HPZB8294'), m([], {}, false));
+    ok(r3.hit.kind !== 'list');
+  },
   consensusVoting() {
     eq(consensus(['RPZE254', 'HPZB294', 'HPZB294', 'HPZ8294']), 'HPZB294');
     eq(consensus(['HPZB294']), 'HPZB294');

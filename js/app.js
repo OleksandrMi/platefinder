@@ -3,7 +3,7 @@ import { PlateText, Matcher, RED, GREEN, parsePlateLine, consensus } from './mat
 import { POWIATS } from './powiats.js';
 import { scanFrame, OCR_PARAMS, OCR_INIT } from './pipeline.js';
 
-const VERSION = '1.1-web';
+const VERSION = '1.2-web';
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -253,7 +253,8 @@ async function scanLoop() {
   const frame = document.createElement('canvas');
   const fctx = frame.getContext('2d', { willReadFrequently: true });
   while (running) {
-    if (document.hidden || video.readyState < 2 || !video.videoWidth || !matcher) { await sleep(250); continue; }
+    // пока открыт список, журнал, настройки или диалог — не распознаём: интерфейс полностью свободен
+    if (uiBusy() || document.hidden || video.readyState < 2 || !video.videoWidth || !matcher) { await sleep(250); continue; }
     const g = visibleRegion();
     // длинная сторона снимка: больше — читает дальше, но медленнее
     const target = state.settings.hiRes ? 1920 : 1280;
@@ -266,10 +267,14 @@ async function scanLoop() {
     try { res = await scanFrame(frame, workers, matcher, state.settings.hiRes ? 10 : 8); }
     catch { await sleep(300); continue; }
     cycleMs = cycleMs * 0.7 + (performance.now() - t0) * 0.3;
+    if (uiBusy()) continue; // пока шёл кадр, пользователь открыл панель — результат не нужен
     handleFrame(res.detections, g.scale / s);
-    if (!res.regions.length) await sleep(120); // пустой кадр — даём телефону отдохнуть
+    // короткий отдых между кадрами — чтобы нажатия обрабатывались без задержки
+    await sleep(res.regions.length ? 40 : 150);
   }
 }
+
+const uiBusy = () => currentSheet !== null || $('#dialogs').childElementCount > 0;
 
 function handleFrame(found, k) {
   const now = Date.now();
@@ -551,8 +556,20 @@ $('#btnPoint').addEventListener('click', async () => {
 let currentSheet = null;
 const ui = { tab: 'plates', q: '', filter: 'all', pq: '', onlyActive: false, jfilter: 'all', confirm: null };
 
-function openSheet(name) { currentSheet = name; renderSheet(); }
-function closeSheet() { currentSheet = null; $('#sheets').innerHTML = ''; ui.confirm = null; }
+function openSheet(name) {
+  currentSheet = name;
+  ui.confirm = null;
+  renderSheet();
+}
+function closeSheet() {
+  currentSheet = null;
+  $('#sheets').innerHTML = '';
+  ui.confirm = null;
+  // старые рамки после возврата к камере не показываем
+  tracks = [];
+  drawOverlay();
+  updateStatus();
+}
 
 function renderSheet() {
   const host = $('#sheets');
