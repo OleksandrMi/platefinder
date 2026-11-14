@@ -3,7 +3,7 @@ import { PlateText, Matcher, RED, GREEN, parsePlateLine, consensus } from './mat
 import { POWIATS } from './powiats.js';
 import { scanFrame, OCR_PARAMS, OCR_INIT } from './pipeline.js';
 
-const VERSION = '1.4-web';
+const VERSION = '1.5-web';
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -161,9 +161,11 @@ let zoom = 1;
 let torchOn = false;
 
 async function startCamera() {
+  // «Высокое качество» — просим у камеры 4K: мелкий номер впереди получает в 2 раза больше пикселей
+  const hi = state.settings.hiRes;
   stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
-    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: hi ? 3840 : 1920 }, height: { ideal: hi ? 2160 : 1080 }, frameRate: { ideal: 30 } },
   });
   video.srcObject = stream;
   await video.play().catch(() => {});
@@ -173,6 +175,17 @@ async function startCamera() {
   $('#btnTorch').hidden = !caps.torch;
   renderZoom();
   await new Promise((r) => (video.readyState >= 2 ? r() : video.addEventListener('loadeddata', r, { once: true })));
+}
+
+async function restartCamera() {
+  try {
+    stream?.getTracks().forEach((tr) => tr.stop());
+    await startCamera();
+    if (zoom > 1) await setZoom(zoom);
+    toast(state.settings.hiRes ? 'Камера: высокое качество' : 'Камера: обычное качество');
+  } catch {
+    toast('Не удалось перезапустить камеру');
+  }
 }
 
 function maxZoom() { return nativeZoom ? Math.min(nativeZoom.max, 10) : 4; }
@@ -257,7 +270,9 @@ async function scanLoop() {
     if (uiBusy() || document.hidden || video.readyState < 2 || !video.videoWidth || !matcher) { await sleep(250); continue; }
     const g = visibleRegion();
     // длинная сторона снимка: больше — читает дальше, но медленнее
-    const target = state.settings.hiRes ? 1920 : 1280;
+    // Кадр берём в полном разрешении камеры: таблички ищутся на уменьшенной копии (в фоновом потоке),
+    // а читаются из полного кадра — мелкий номер не теряет чёткость.
+    const target = state.settings.hiRes ? 3840 : 2560;
     const s = Math.min(1, target / Math.max(g.w, g.h));
     frame.width = Math.round(g.w * s);
     frame.height = Math.round(g.h * s);
@@ -698,7 +713,7 @@ const SETTINGS = [
   ['fuzzy', 'Допуск ошибки распознавания', 'Находить номер из списка, если камера пропустила символ или спутала похожие (H/N, 7/1…). Помечается ≈'],
   ['showAll', 'Показывать все номера', 'Белые рамки у номеров не из списка'],
   ['autoLog', 'Записывать совпадения в журнал', 'С временем и координатами'],
-  ['hiRes', 'Высокое качество', 'Читает номера дальше, но медленнее и сильнее греет телефон'],
+  ['hiRes', 'Высокое качество (4K)', 'Читает мелкие и дальние номера (телефон на панели), но медленнее и сильнее греет телефон'],
   ['videoAudio', 'Звук в видео', 'Попросит доступ к микрофону'],
 ];
 function settingsSheet() {
@@ -746,7 +761,11 @@ $('#sheets').addEventListener('click', async (e) => {
       return offerSave(blob, b.textContent.trim());
     }
     case 'export': return exportJournal();
-    case 'set': state.settings[b.dataset.k] = !state.settings[b.dataset.k]; saveSettings(); break;
+    case 'set':
+      state.settings[b.dataset.k] = !state.settings[b.dataset.k];
+      saveSettings();
+      if (b.dataset.k === 'hiRes' && stream) restartCamera();
+      break;
   }
   renderSheet();
 });

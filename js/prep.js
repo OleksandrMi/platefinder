@@ -22,7 +22,9 @@ export function locateRegions(frame, makeCanvas, maxRegions, cache = {}) {
   const gray = toGray(ctx.getImageData(0, 0, sw, sh).data, sw * sh);
   const k = fw / sw;
   // приоритет: строки символов → белые таблички → области с плотными контурами
-  const lines = findCharLines(gray, sw, sh, maxRegions);
+  // строки символов при нескольких порогах контраста: чёткие кадры — высокий порог,
+  // мутные (сквозь лобовое стекло, дымка) — низкий; одинаковые находки объединяются ниже
+  const lines = mergeRegions([12, 7, 4].map((c) => findCharLines(gray, sw, sh, maxRegions, c)), maxRegions * 2);
   const white = findWhitePlates(gray, sw, sh, maxRegions);
   const edges = findPlateRegions(gray, sw, sh, maxRegions);
   return mergeRegions([
@@ -45,7 +47,9 @@ export function locateRegions(frame, makeCanvas, maxRegions, cache = {}) {
  *  4) увеличивает до удобной для Tesseract высоты, делает чёрно-белой, добавляет поля.
  * Возвращает числа для перевода координат вырезки обратно в кадр (map) и рамку таблички.
  */
-const MAX_W = 1400; // предел ширины рабочей картинки — защита от «зависания» на странных областях
+const MAX_W = 1400;
+/** Режим вырезки: 'bin' — ч/б по порогу, 'gray' — серая с растянутым контрастом. */
+export const PREP = { mode: 'bin' }; // предел ширины рабочей картинки — защита от «зависания» на странных областях
 
 export function prepareCrop(frame, r, wc, oc, depth = 0) {
   // табличка не бывает уже/шире этих пропорций (с запасом на поля и наклон)
@@ -108,10 +112,15 @@ export function prepareCrop(frame, r, wc, oc, depth = 0) {
   // яркость; синее (полоса ЕС, полосы на кузове) и пустые углы после выпрямления — не учитываем
   const gray = new Uint8Array(n);
   const blue = new Uint8Array(n);
+  const vivid = new Uint8Array(n);
   const warped = W !== W0 || geo && Math.abs(geo.angle) > 0.035;
   for (let i = 0, j = 0; i < n; i++, j += 4) {
     const R = px[j], G = px[j + 1], B = px[j + 2];
     blue[i] = B > R + 35 && B > G + 10 ? 1 : 0;
+    // насыщенный цвет (жёлтый фургон, красный кузов) — не может быть белым полем таблички;
+    // светло-зелёная табличка электромобиля насыщена слабо и проходит
+    const mx = Math.max(R, G, B), mn = Math.min(R, G, B);
+    vivid[i] = mx > 0 && (mx - mn) / mx > 0.65 ? 1 : 0; // ночью под красным светом табличка ~0.5, жёлтый кузов ~0.8
     gray[i] = (R * 77 + G * 150 + B * 29) >> 8;
   }
   if (warped) {
@@ -125,7 +134,9 @@ export function prepareCrop(frame, r, wc, oc, depth = 0) {
   const valid = new Uint8Array(n);
   let nv = 0;
   for (let i = 0; i < n; i++) if (!blue[i]) valid[nv++] = gray[i];
-  const plate = largestBright(gray, blue, W, H, otsu(nv ? valid.subarray(0, nv) : gray)) || { x0: 0, y0: 0, x1: W - 1, y1: H - 1 };
+  const notPlate = new Uint8Array(n);
+  for (let i = 0; i < n; i++) notPlate[i] = blue[i] || vivid[i];
+  const plate = largestBright(gray, notPlate, W, H, otsu(nv ? valid.subarray(0, nv) : gray)) || { x0: 0, y0: 0, x1: W - 1, y1: H - 1 };
   const pw = plate.x1 - plate.x0 + 1, ph = plate.y1 - plate.y0 + 1;
 
   // 2. порог внутри таблички: тёмные пиксели = символы
@@ -137,7 +148,9 @@ export function prepareCrop(frame, r, wc, oc, depth = 0) {
   }
   const tT = otsu(m ? inside.subarray(0, m) : gray);
   const dark = new Uint8Array(n);
+  let darkInPlate = 0;
   for (let i = 0; i < n; i++) dark[i] = !blue[i] && gray[i] <= tT ? 1 : 0;
+  for (let y = plate.y0; y <= plate.y1; y++) for (let x = plate.x0; x <= plate.x1; x++) darkInPlate += dark[y * W + x];
 
   // 3. строка символов: самая высокая полоса строк с тёмными пикселями
   //    (рамка — слишком сплошная, надпись дилера — ниже и тоньше)
@@ -156,6 +169,9 @@ export function prepareCrop(frame, r, wc, oc, depth = 0) {
     }
   }
   if (cur && (!best || cur.y1 - cur.y0 > best.y1 - best.y0)) best = cur;
+  // бледная табличка (сквозь мутное стекло): порог почти ничего не выделил — берём середину таблички
+  const pale = darkInPlate < pw * ph * 0.04;
+  if (pale) best = { y0: Math.round(ph * 0.12), y1: Math.round(ph * 0.88) };
   if (!best || best.y1 - best.y0 < ph * 0.25) best = { y0: 0, y1: ph - 1 };
   const by0 = plate.y0 + best.y0, by1 = plate.y0 + best.y1;
   const bh = by1 - by0 + 1;
@@ -164,8 +180,10 @@ export function prepareCrop(frame, r, wc, oc, depth = 0) {
   // «сплошные» столбцы резать нельзя — это может быть палочка буквы H, I, 1)
   const colDark = (x) => { let c = 0; for (let y = by0; y <= by1; y++) c += dark[y * W + x]; return c; };
   let bx0 = plate.x0, bx1 = plate.x1;
-  while (bx0 < bx1 && colDark(bx0) === 0) bx0++;
-  while (bx1 > bx0 && colDark(bx1) === 0) bx1--;
+  if (!pale) {
+    while (bx0 < bx1 && colDark(bx0) === 0) bx0++;
+    while (bx1 > bx0 && colDark(bx1) === 0) bx1--;
+  }
   bx0 = Math.max(plate.x0, bx0 - 2); bx1 = Math.min(plate.x1, bx1 + 2);
   const bw = bx1 - bx0 + 1;
   if (bw < bh * 1.5) return null; // слишком узко для номера
@@ -174,10 +192,28 @@ export function prepareCrop(frame, r, wc, oc, depth = 0) {
   const k = CHAR_H / bh;
   const ow = Math.round(bw * k) + MARGIN * 2, oh = CHAR_H + MARGIN * 2;
   const bin = wctx.createImageData(bw, bh);
-  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
-    const v = dark[(by0 + y) * W + bx0 + x] ? 0 : 255;
-    const j = (y * bw + x) * 4;
-    bin.data[j] = bin.data[j + 1] = bin.data[j + 2] = v; bin.data[j + 3] = 255;
+  if (PREP.mode === 'gray' || pale) {
+    // серая картинка с растянутым контрастом: на размытом тексте Tesseract бинаризует аккуратнее нас
+    const hist = new Uint32Array(256);
+    let cnt = 0;
+    for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) { const i = y * W + x; if (!blue[i]) { hist[gray[i]]++; cnt++; } }
+    let lo = 0, hi = 255, acc = 0;
+    for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= cnt * 0.03) { lo = v; break; } }
+    acc = 0;
+    for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= cnt * 0.15) { hi = v; break; } }
+    const span = Math.max(12, hi - lo);
+    for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+      const i = (by0 + y) * W + bx0 + x;
+      const v = blue[i] ? 255 : Math.max(0, Math.min(255, Math.round(((gray[i] - lo) * 255) / span)));
+      const j = (y * bw + x) * 4;
+      bin.data[j] = bin.data[j + 1] = bin.data[j + 2] = v; bin.data[j + 3] = 255;
+    }
+  } else {
+    for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+      const v = dark[(by0 + y) * W + bx0 + x] ? 0 : 255;
+      const j = (y * bw + x) * 4;
+      bin.data[j] = bin.data[j + 1] = bin.data[j + 2] = v; bin.data[j + 3] = 255;
+    }
   }
   wctx.putImageData(bin, 0, 0);
   oc.width = ow; oc.height = oh;

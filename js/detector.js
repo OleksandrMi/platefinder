@@ -134,7 +134,13 @@ export function findWhitePlates(gray, w, h, maxCount = 6) {
  * Третий признак (самый надёжный): строка символов — 4+ тёмных пятна одинаковой высоты,
  * стоящих в ряд. Не зависит от цвета машины и фона.
  */
-export function findCharLines(gray, w, h, maxCount = 6) {
+/** Настройки детекторов (вынесены, чтобы подбирать на тестовых фото). */
+export const DET = {
+  // насколько символ темнее среднего по окрестности; сквозь лобовое стекло контраст низкий
+  charContrast: 12,
+};
+
+export function findCharLines(gray, w, h, maxCount = 6, contrast = DET.charContrast) {
   // адаптивный порог: темнее среднего по окрестности (интегральное изображение)
   const R = Math.max(6, Math.round(w / 60));
   const ii = new Float64Array((w + 1) * (h + 1));
@@ -152,7 +158,7 @@ export function findCharLines(gray, w, h, maxCount = 6) {
       const x0 = Math.max(0, x - R), x1 = Math.min(w, x + R + 1);
       const s = ii[y1 * (w + 1) + x1] - ii[y0 * (w + 1) + x1] - ii[y1 * (w + 1) + x0] + ii[y0 * (w + 1) + x0];
       const mean = s / ((x1 - x0) * (y1 - y0));
-      dark[y * w + x] = gray[y * w + x] < mean - 12 ? 1 : 0;
+      dark[y * w + x] = gray[y * w + x] < mean - contrast ? 1 : 0;
     }
   }
 
