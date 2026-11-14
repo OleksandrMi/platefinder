@@ -177,7 +177,7 @@ export function findCharLines(gray, w, h, maxCount = 6) {
       if (y < h - 1 && dark[p + w] && !lab[p + w]) { lab[p + w] = id; stack.push(p + w); }
     }
     const cw = x1 - x0 + 1, ch = y1 - y0 + 1;
-    if (ch < 7 || ch > h * 0.15 || cw < 1 || cw > ch * 1.1) continue;
+    if (ch < 7 || ch > h * 0.15 || cw < 1 || cw > ch * 1.6) continue; // M, W (особенно смазанные) — широкие
     const fill = area / (cw * ch);
     if (fill < 0.12 || fill > 0.9) continue;
     chars.push({ x0, y0, x1, y1, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, h: ch });

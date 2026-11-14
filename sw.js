@@ -1,5 +1,5 @@
 // Офлайн-режим: приложение и модель распознавания кешируются после первого запуска.
-const VERSION = 'pf-web-4';
+const VERSION = 'pf-web-5';
 const SHELL = [
   './', 'index.html', 'js/app.js', 'js/matcher.js', 'js/powiats.js', 'js/detector.js', 'js/pipeline.js',
   'js/prep.js', 'js/scan-worker.js', 'manifest.webmanifest',

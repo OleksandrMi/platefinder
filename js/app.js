@@ -3,7 +3,7 @@ import { PlateText, Matcher, RED, GREEN, parsePlateLine, consensus } from './mat
 import { POWIATS } from './powiats.js';
 import { scanFrame, OCR_PARAMS, OCR_INIT } from './pipeline.js';
 
-const VERSION = '1.3-web';
+const VERSION = '1.4-web';
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

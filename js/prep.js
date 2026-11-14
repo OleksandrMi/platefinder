@@ -2,7 +2,7 @@
 // Не использует DOM: работает и в фоновом потоке (OffscreenCanvas), и в основном (обычный canvas).
 import { findPlateRegions, findWhitePlates, findCharLines, mergeRegions, toGray, otsu } from './detector.js';
 
-const LOCATE_W = 640;   // ширина копии кадра для поиска табличек
+const LOCATE_W = 800;   // ширина копии кадра для поиска табличек (поиск идёт в фоновом потоке)
 const WORK_H = 140;     // высота, до которой увеличиваем область для анализа
 const CHAR_H = 56;      // высота строки символов в вырезке для Tesseract
 export const MARGIN = 12; // белые поля вокруг строки (Tesseract читает лучше с полями)
@@ -13,7 +13,8 @@ export const MARGIN = 12; // белые поля вокруг строки (Tess
  */
 export function locateRegions(frame, makeCanvas, maxRegions, cache = {}) {
   const fw = frame.width, fh = frame.height;
-  const sw = Math.min(LOCATE_W, fw), sh = Math.round((fh * sw) / fw);
+  // фиксированный масштаб поиска: маленький кадр слегка увеличиваем (не больше чем в 1.5 раза)
+  const sw = Math.round(Math.min(LOCATE_W, fw * 1.5)), sh = Math.round((fh * sw) / fw);
   const small = (cache.small ||= makeCanvas(sw, sh));
   small.width = sw; small.height = sh;
   const ctx = small.getContext('2d', { willReadFrequently: true });
@@ -104,17 +105,27 @@ export function prepareCrop(frame, r, wc, oc, depth = 0) {
   const px = wctx.getImageData(0, 0, W, H).data;
   const n = W * H;
 
-  // яркость; синее считаем фоном
+  // яркость; синее (полоса ЕС, полосы на кузове) и пустые углы после выпрямления — не учитываем
   const gray = new Uint8Array(n);
   const blue = new Uint8Array(n);
+  const warped = W !== W0 || geo && Math.abs(geo.angle) > 0.035;
   for (let i = 0, j = 0; i < n; i++, j += 4) {
     const R = px[j], G = px[j + 1], B = px[j + 2];
     blue[i] = B > R + 35 && B > G + 10 ? 1 : 0;
     gray[i] = (R * 77 + G * 150 + B * 29) >> 8;
   }
+  if (warped) {
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const [ox, oy] = unwarp(x + 0.5, y + 0.5);
+      if (ox < 1 || oy < 1 || ox > W0 - 1 || oy > H - 1) blue[y * W + x] = 1;
+    }
+  }
 
   // 1. белое поле таблички
-  const plate = largestBright(gray, blue, W, H, otsu(gray)) || { x0: 0, y0: 0, x1: W - 1, y1: H - 1 };
+  const valid = new Uint8Array(n);
+  let nv = 0;
+  for (let i = 0; i < n; i++) if (!blue[i]) valid[nv++] = gray[i];
+  const plate = largestBright(gray, blue, W, H, otsu(nv ? valid.subarray(0, nv) : gray)) || { x0: 0, y0: 0, x1: W - 1, y1: H - 1 };
   const pw = plate.x1 - plate.x0 + 1, ph = plate.y1 - plate.y0 + 1;
 
   // 2. порог внутри таблички: тёмные пиксели = символы
@@ -218,7 +229,7 @@ function estimateGeometry(px, W, H) {
       if (y < H - 1 && !lab[p + W] && gray[p + W] <= t) { lab[p + W] = id; stack[sp++] = p + W; }
     }
     const w = x1 - x0 + 1, h = y1 - y0 + 1;
-    if (h < H * 0.1 || h > H * 0.7 || w > h * 1.2 || w < 2) continue;
+    if (h < H * 0.1 || h > H * 0.7 || w > h * 1.6 || w < 2) continue; // M, W — широкие
     const fill = area / (w * h);
     if (fill < 0.12 || fill > 0.92) continue;
     // наклон самого символа: главная ось распределения его пикселей
