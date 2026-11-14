@@ -111,9 +111,9 @@ export function findWhitePlates(gray, w, h, maxCount = 6) {
     const rw = x1 - x0 + 1, rh = y1 - y0 + 1;
     if (rw < 16 || rh < 5 || rw > w * 0.8 || rh > h * 0.2) continue;
     const aspect = rw / rh;
-    if (aspect < 2.2 || aspect > 7) continue;
+    if (aspect < 1.6 || aspect > 7) continue; // наклонная табличка — меньше вытянута
     const fill = area / (rw * rh);
-    if (fill < 0.4 || fill > 0.93) continue; // сплошной белый прямоугольник без символов — не номер
+    if (fill < 0.3 || fill > 0.93) continue; // сплошной белый прямоугольник без символов — не номер
     // внутри должны быть тёмные символы, разбросанные по ширине
     let dark = 0, cols = 0;
     for (let x = x0; x <= x1; x++) {
@@ -201,14 +201,14 @@ export function findCharLines(gray, w, h, maxCount = 6) {
       }
       const hr = c.h / last.h;
       if (hr < 0.75 || hr > 1.33) continue;
-      if (Math.abs(c.cy - last.cy) > last.h * 0.35) continue;
+      if (Math.abs(c.cy - last.cy) > last.h * 0.5) continue; // допускаем наклон строки
       chain.push(c); used[j] = 1; last = c;
     }
     if (chain.length < 4 || chain.length > 12) continue;
     const x0 = Math.min(...chain.map((c) => c.x0)), x1 = Math.max(...chain.map((c) => c.x1));
     const y0 = Math.min(...chain.map((c) => c.y0)), y1 = Math.max(...chain.map((c) => c.y1));
     const lw = x1 - x0 + 1, lh = y1 - y0 + 1;
-    if (lw / lh < 2 || lw / lh > 12) continue;
+    if (lw / lh < 1.1 || lw / lh > 12) continue; // наклонная/сжатая строка (съёмка сбоку) — «выше» по рамке
     // ближе к 7 символам номера — выше рейтинг
     const score = 3 + Math.sqrt(lw * lh) * (1 - Math.abs(chain.length - 7) / 10);
     lines.push({ x: x0, y: y0, w: lw, h: lh, score });

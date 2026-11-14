@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>PlateFinder — тест номеров под углом</title>
+<style>
+  body { font: 14px system-ui, sans-serif; background: #0a0d12; color: #e8edf5; padding: 16px; }
+  .ok { color: #30d158; } .fail { color: #ff3b30; }
+  table { border-collapse: collapse; } td, th { border: 1px solid #2a3342; padding: 4px 8px; font-variant-numeric: tabular-nums; }
+  img.crop { background: #fff; height: 32px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div id="summary">…</div>
+<table id="t"><tr><th>кадр</th><th>искажение</th><th>результат</th><th>прочтения</th></tr></table>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script type="module">
+import { Matcher } from './js/matcher.js';
+import { POWIATS } from './js/powiats.js';
+import { scanFrame, OCR_PARAMS, OCR_INIT, debug } from './js/pipeline.js';
+
+debug.enabled = true;
+const powiats = new Map(POWIATS.map(([code, name, region, s]) => [code, { code, name, region, service: !!s }]));
+const m = new Matcher([{ plate: 'HPZB294', color: 'red', note: '' }], {}, powiats, false);
+const workers = [];
+for (let i = 0; i < 2; i++) { const w = await Tesseract.createWorker('eng', 1, {}, OCR_INIT); await w.setParameters(OCR_PARAMS); workers.push(w); }
+
+// Искажения: поворот (наклон телефона) и сдвиг/сжатие (съёмка сбоку)
+const DISTORT = [
+  { name: 'ровно', rot: 0, skewY: 0, sx: 1 },
+  { name: 'поворот +10°', rot: 10, skewY: 0, sx: 1 },
+  { name: 'поворот −10°', rot: -10, skewY: 0, sx: 1 },
+  { name: 'поворот +18°', rot: 18, skewY: 0, sx: 1 },
+  { name: 'поворот −25°', rot: -25, skewY: 0, sx: 1 },
+  { name: 'сбоку (перекос 15°, сжатие 0.7)', rot: 0, skewY: 15, sx: 0.7 },
+  { name: 'сбоку (перекос −20°, сжатие 0.6)', rot: 0, skewY: -20, sx: 0.6 },
+];
+const files = ['vid_65', 'vid_85', 'vid_125'];
+let ok = 0, total = 0, okFlat = 0, totalFlat = 0;
+const tbl = document.getElementById('t');
+for (const f of files) {
+  const img = new Image(); img.src = `test-assets/${f}.jpg`; await new Promise((ok, bad) => { img.onload = ok; img.onerror = bad; if (img.complete && img.naturalWidth) ok(); });
+  const top = Math.round(img.height * 0.09), h = Math.round(img.height * 0.69);
+  for (const d of DISTORT) {
+    const c = document.createElement('canvas'); c.width = img.width; c.height = h;
+    const g = c.getContext('2d');
+    g.fillStyle = '#777'; g.fillRect(0, 0, c.width, c.height);
+    g.translate(c.width / 2, c.height / 2);
+    g.rotate((d.rot * Math.PI) / 180);
+    g.transform(d.sx, Math.tan((d.skewY * Math.PI) / 180), 0, 1, 0, 0);
+    g.drawImage(img, 0, top, img.width, h, -img.width / 2, -h / 2, img.width, h);
+    const r = await scanFrame(c, workers, m, 8);
+    const hit = r.detections.some((x) => x.hit.kind === 'list');
+    total++; if (hit) ok++;
+    if (d.rot === 0 && d.skewY === 0) { totalFlat++; if (hit) okFlat++; }
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${f}</td><td>${d.name}</td><td class="${hit ? 'ok' : 'fail'}">${hit ? 'НАЙДЕН' : 'нет'}</td><td>${debug.crops.filter((x) => x.text).slice(0, 3).map((x) => `<img class="crop" src="${x.url}"> ${x.text.replace(/\s/g, '')}`).join(' &nbsp; ') || '—'}</td>`;
+    tbl.appendChild(tr);
+  }
+}
+const s = document.getElementById('summary');
+s.textContent = `найден точно: ${ok} из ${total} (ровные: ${okFlat} из ${totalFlat}, под углом: ${ok - okFlat} из ${total - totalFlat})`;
+window.ANGLE_RESULT = { ok, total, okFlat, totalFlat, rows: [...tbl.querySelectorAll('tr')].slice(1).map((tr) => [...tr.children].slice(0, 3).map((td) => td.textContent).join(' | ')) };
+</script>
+</body>
+</html>

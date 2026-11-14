@@ -67,7 +67,7 @@ export const PlateText = {
 };
 
 const CONFUSABLE = new Set(
-  ['HN', 'MN', 'UV', 'KX', '71', '4A', 'EF', 'PR', 'C6', 'YV', 'WV', 'T1', 'J1', 'R8']
+  ['HN', 'MN', 'UV', 'KX', '71', '4A', 'EF', 'PR', 'C6', 'YV', 'WV', 'T1', 'J1', 'R8', '38']
     .flatMap((p) => [p, p[1] + p[0]])
 );
 

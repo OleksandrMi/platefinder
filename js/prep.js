@@ -44,13 +44,63 @@ export function locateRegions(frame, makeCanvas, maxRegions, cache = {}) {
  *  4) увеличивает до удобной для Tesseract высоты, делает чёрно-белой, добавляет поля.
  * Возвращает числа для перевода координат вырезки обратно в кадр (map) и рамку таблички.
  */
-export function prepareCrop(frame, r, wc, oc) {
+const MAX_W = 1400; // предел ширины рабочей картинки — защита от «зависания» на странных областях
+
+export function prepareCrop(frame, r, wc, oc, depth = 0) {
+  // табличка не бывает уже/шире этих пропорций (с запасом на поля и наклон)
+  if (!(r.w > 4 && r.h > 4) || r.w / r.h > 10 || r.h / r.w > 2) return null;
   const s = WORK_H / r.h;
-  const W = Math.max(8, Math.round(r.w * s)), H = WORK_H;
-  wc.width = W; wc.height = H;
+  const W0 = Math.max(8, Math.min(MAX_W, Math.round(r.w * s))), H = WORK_H;
+  wc.width = W0; wc.height = H;
   const wctx = wc.getContext('2d', { willReadFrequently: true });
   wctx.imageSmoothingQuality = 'high';
-  wctx.drawImage(frame, r.x, r.y, r.w, r.h, 0, 0, W, H);
+  wctx.drawImage(frame, r.x, r.y, r.w, r.h, 0, 0, W0, H);
+
+  // 0. табличка под углом: наклон строки символов, вид наклона, сжатие
+  const geo = estimateGeometry(wctx.getImageData(0, 0, W0, H).data, W0, H);
+
+  // 0a. строка символов мелкая относительно области — вырезаем её из кадра плотнее и крупнее
+  if (geo && depth === 0 && geo.med < H * 0.22) {
+    // запас с учётом наклона: белое поле таблички должно поместиться целиком
+    const tilt = Math.abs(Math.tan(geo.angle)) * (geo.x1 - geo.x0);
+    const padY = geo.med * 1.4 + tilt * 0.3, padX = geo.med * 1.8;
+    const x0 = Math.max(0, geo.x0 - padX), y0 = Math.max(0, geo.y0 - padY);
+    const x1 = Math.min(W0, geo.x1 + padX), y1 = Math.min(H, geo.y1 + padY);
+    const r2 = { x: r.x + x0 / s, y: r.y + y0 / s, w: (x1 - x0) / s, h: (y1 - y0) / s };
+    if (r2.w > 4 && r2.h > 4) {
+      const res = prepareCrop(frame, r2, wc, oc, 1);
+      if (res) return res;
+      // не вышло — продолжаем с исходной областью
+      wc.width = W0; wc.height = H;
+      wctx.imageSmoothingQuality = 'high';
+      wctx.drawImage(frame, r.x, r.y, r.w, r.h, 0, 0, W0, H);
+    }
+  }
+
+  let W = W0;
+  let unwarp = (x, y) => [x, y]; // точка выпрямленной картинки → исходная картинка области
+  if (geo && (Math.abs(geo.angle) > 0.035 || geo.stretch > 1.15)) {
+    const a = geo.angle, st = Math.min(geo.stretch, MAX_W / W0);
+    W = Math.max(8, Math.round(W0 * st));
+    wc.width = W; wc.height = H;
+    wctx.save();
+    wctx.fillStyle = '#fff'; wctx.fillRect(0, 0, W, H);
+    wctx.translate(W / 2, H / 2);
+    wctx.scale(st, 1);
+    if (geo.shear) {
+      // съёмка сбоку: палочки букв вертикальны, наклонена только строка → выпрямляем сдвигом
+      wctx.transform(1, -Math.tan(a), 0, 1, 0, 0);
+    } else {
+      // телефон повёрнут: наклонено всё вместе с буквами → поворачиваем
+      wctx.rotate(-a);
+    }
+    wctx.drawImage(frame, r.x, r.y, r.w, r.h, -W0 / 2, -H / 2, W0, H);
+    wctx.restore();
+    const cos = Math.cos(a), sin = Math.sin(a), tg = Math.tan(a);
+    unwarp = geo.shear
+      ? (x, y) => { const ux = (x - W / 2) / st, uy = y - H / 2; return [ux + W0 / 2, uy + tg * ux + H / 2]; }
+      : (x, y) => { const ux = (x - W / 2) / st, uy = y - H / 2; return [ux * cos - uy * sin + W0 / 2, ux * sin + uy * cos + H / 2]; };
+  }
   const px = wctx.getImageData(0, 0, W, H).data;
   const n = W * H;
 
@@ -125,12 +175,103 @@ export function prepareCrop(frame, r, wc, oc) {
   octx.imageSmoothingEnabled = true;
   octx.drawImage(wc, 0, 0, bw, bh, MARGIN, MARGIN, ow - MARGIN * 2, CHAR_H);
 
+  // рамка таблички в координатах кадра (с учётом выпрямления — по четырём углам)
+  const corners = [[plate.x0, plate.y0], [plate.x1 + 1, plate.y0], [plate.x0, plate.y1 + 1], [plate.x1 + 1, plate.y1 + 1]]
+    .map(([x, y]) => unwarp(x, y));
+  const xs = corners.map((c) => c[0]), ys = corners.map((c) => c[1]);
   return {
     map: { rx: r.x, ry: r.y, s, bx0, by0, k },
     plateBox: {
-      x0: r.x + plate.x0 / s, y0: r.y + plate.y0 / s,
-      x1: r.x + (plate.x1 + 1) / s, y1: r.y + (plate.y1 + 1) / s,
+      x0: r.x + Math.min(...xs) / s, y0: r.y + Math.min(...ys) / s,
+      x1: r.x + Math.max(...xs) / s, y1: r.y + Math.max(...ys) / s,
     },
+  };
+}
+
+/**
+ * Наклон строки символов и их сжатие по ширине.
+ * Тёмные пятна размером с символ → прямая через их центры (наклон) и средние пропорции (сжатие).
+ * -> {angle (радианы), stretch (≥1)} или null, если символов не найдено
+ */
+function estimateGeometry(px, W, H) {
+  const n = W * H;
+  const gray = new Uint8Array(n);
+  for (let i = 0, j = 0; i < n; i++, j += 4) gray[i] = (px[j] * 77 + px[j + 1] * 150 + px[j + 2] * 29) >> 8;
+  const t = otsu(gray);
+  const lab = new Int32Array(n);
+  const stack = new Int32Array(n);
+  const comps = [];
+  let id = 0;
+  for (let i = 0; i < n; i++) {
+    if (lab[i] || gray[i] > t) continue;
+    id++;
+    let x0 = W, y0 = H, x1 = 0, y1 = 0, area = 0, sp = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+    stack[sp++] = i; lab[i] = id;
+    while (sp) {
+      const p = stack[--sp];
+      const x = p % W, y = (p - x) / W;
+      area++; sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      if (x > 0 && !lab[p - 1] && gray[p - 1] <= t) { lab[p - 1] = id; stack[sp++] = p - 1; }
+      if (x < W - 1 && !lab[p + 1] && gray[p + 1] <= t) { lab[p + 1] = id; stack[sp++] = p + 1; }
+      if (y > 0 && !lab[p - W] && gray[p - W] <= t) { lab[p - W] = id; stack[sp++] = p - W; }
+      if (y < H - 1 && !lab[p + W] && gray[p + W] <= t) { lab[p + W] = id; stack[sp++] = p + W; }
+    }
+    const w = x1 - x0 + 1, h = y1 - y0 + 1;
+    if (h < H * 0.1 || h > H * 0.7 || w > h * 1.2 || w < 2) continue;
+    const fill = area / (w * h);
+    if (fill < 0.12 || fill > 0.92) continue;
+    // наклон самого символа: главная ось распределения его пикселей
+    const mx = sx / area, my = sy / area;
+    const mu20 = sxx / area - mx * mx, mu02 = syy / area - my * my, mu11 = sxy / area - mx * my;
+    const th = 0.5 * Math.atan2(2 * mu11, mu20 - mu02);
+    const tilt = th > 0 ? th - Math.PI / 2 : th + Math.PI / 2;
+    comps.push({ x0, y0, x1, y1, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w, h, tilt });
+  }
+  if (comps.length < 3) return null;
+  // оставляем пятна близкой высоты (символы номера), отбрасываем мелочь и мусор
+  const hs = comps.map((c) => c.h).sort((a, b) => a - b);
+  const med = hs[hs.length >> 1];
+  const similar = comps.filter((c) => c.h > med * 0.7 && c.h < med * 1.4).sort((p, q) => p.cx - q.cx);
+  // только самая длинная цепочка символов в ряд (без подписей, наклеек, букв на кузове)
+  let chars = [];
+  const used = new Uint8Array(similar.length);
+  for (let i = 0; i < similar.length; i++) {
+    if (used[i]) continue;
+    const chain = [similar[i]];
+    used[i] = 1;
+    for (let j = i + 1; j < similar.length; j++) {
+      if (used[j]) continue;
+      const last = chain[chain.length - 1], c = similar[j];
+      if (c.x0 - last.x1 > last.h * 1.6) break;
+      if (Math.abs(c.cy - last.cy) > last.h * 0.5) continue;
+      const hr = c.h / last.h;
+      if (hr < 0.75 || hr > 1.33) continue;
+      chain.push(c); used[j] = 1;
+    }
+    if (chain.length > chars.length) chars = chain;
+  }
+  if (chars.length < 3) return null;
+  // наклон строки: метод наименьших квадратов по центрам
+  const N = chars.length;
+  const mx = chars.reduce((a, c) => a + c.cx, 0) / N, my = chars.reduce((a, c) => a + c.cy, 0) / N;
+  let sxy = 0, sxx = 0;
+  for (const c of chars) { sxy += (c.cx - mx) * (c.cy - my); sxx += (c.cx - mx) ** 2; }
+  if (sxx < 1) return null;
+  const angle = Math.atan(sxy / sxx);
+  if (Math.abs(angle) > 0.6) return null; // > ~35° — не похоже на строку номера
+  // вид наклона: если буквы наклонены так же, как строка — поворот; если стоят прямо — сдвиг (съёмка сбоку)
+  const tilts = chars.map((c) => c.tilt).sort((a, b) => a - b);
+  const tilt = tilts[tilts.length >> 1];
+  const shear = Math.abs(angle) > 0.035 && Math.abs(tilt) < Math.abs(tilt - angle);
+  // сжатие: у символов польского номера ширина ≈ 0.55 высоты (у узких I/1 меньше — берём верхнюю часть)
+  const asp = chars.map((c) => c.w / c.h).sort((a, b) => a - b);
+  const typical = asp[Math.floor(asp.length * 0.7)];
+  const stretch = Math.min(1.8, Math.max(1, 0.55 / Math.max(0.2, typical)));
+  return {
+    angle, stretch, shear, med,
+    x0: Math.min(...chars.map((c) => c.x0)), y0: Math.min(...chars.map((c) => c.y0)),
+    x1: Math.max(...chars.map((c) => c.x1)), y1: Math.max(...chars.map((c) => c.y1)),
   };
 }
 
